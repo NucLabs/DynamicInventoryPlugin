@@ -7,6 +7,9 @@ __pycache__/
 # C extensions
 *.so
 
+# Ansible collection symlinks (created by ansible-creator for local development)
+collections/
+
 # Distribution / packaging
 .Python
 build/
