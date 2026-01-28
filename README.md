@@ -2,6 +2,129 @@
 
 This repository contains the `nuclabs.dyninv` Ansible Collection.
 
+## MSSQL Dynamic Inventory Plugin
+
+This collection includes a dynamic inventory plugin that retrieves hosts from a Microsoft SQL Server database using Kerberos authentication.
+
+### Features
+
+- Queries MSSQL database for host inventory
+- Combines `name` and `domainname` fields to create FQDNs
+- All other query columns become host variables
+- Supports Kerberos (default) and SQL Server authentication
+- Supports constructed features (groups, keyed_groups, compose)
+- Caching support to reduce database load
+
+### Requirements
+
+- Python library: `pymssql`
+- For Kerberos authentication: FreeTDS compiled with Kerberos support
+- Valid Kerberos ticket (obtain via `kinit`)
+
+### Quick Start
+
+1. Install the collection and dependencies:
+
+```bash
+ansible-galaxy collection install nuclabs.dyninv
+pip install pymssql
+```
+
+2. Create an inventory file (e.g., `inventory.mssql.yml`):
+
+```yaml
+---
+plugin: nuclabs.dyninv.mssql
+host: sqlserver.domain.com
+database: inventory_db
+query: |
+  SELECT name, domainname, os_type, environment
+  FROM servers
+  WHERE active = 1
+```
+
+3. Obtain a Kerberos ticket:
+
+```bash
+kinit your_username@YOUR.DOMAIN.COM
+```
+
+4. Test the inventory:
+
+```bash
+# List all hosts as JSON
+ansible-inventory -i inventory.mssql.yml --list
+
+# Show inventory in YAML format
+ansible-inventory -i inventory.mssql.yml --list --yaml
+
+# Display a graph of the inventory
+ansible-inventory -i inventory.mssql.yml --graph
+
+# Show variables for a specific host
+ansible-inventory -i inventory.mssql.yml --host server01.domain.com
+
+# Verify connectivity to all hosts
+ansible -i inventory.mssql.yml all -m ping
+```
+
+### Testing with Verbose Output
+
+For troubleshooting, use verbose flags to see more details:
+
+```bash
+# Basic verbose output
+ansible-inventory -i inventory.mssql.yml --list -v
+
+# More verbose (shows connection details)
+ansible-inventory -i inventory.mssql.yml --list -vvv
+
+# Maximum verbosity
+ansible-inventory -i inventory.mssql.yml --list -vvvv
+```
+
+### Example with Groups
+
+```yaml
+---
+plugin: nuclabs.dyninv.mssql
+host: sqlserver.domain.com
+database: cmdb
+query: |
+  SELECT name, domainname, os_type, environment, datacenter
+  FROM servers
+  WHERE active = 1
+
+# Create groups based on variable values
+keyed_groups:
+  - prefix: env
+    key: environment
+  - prefix: os
+    key: os_type
+
+# Create groups based on conditions
+groups:
+  linux: os_type == 'Linux'
+  windows: os_type == 'Windows'
+  production: environment == 'prod'
+
+# Create additional variables
+compose:
+  ansible_host: inventory_hostname
+```
+
+Test grouped inventory:
+
+```bash
+# Show the group structure
+ansible-inventory -i inventory.mssql.yml --graph
+
+# List hosts in a specific group
+ansible-inventory -i inventory.mssql.yml --graph --vars env_prod
+```
+
+For full documentation, see `ansible-doc -t inventory nuclabs.dyninv.mssql`.
+
 <!--start requires_ansible-->
 <!--end requires_ansible-->
 
