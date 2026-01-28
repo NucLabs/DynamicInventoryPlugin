@@ -5,3 +5,11 @@ database: test
 query: |
   SELECT *
   FROM servers
+
+keyed_groups:
+  - key: somevar
+    prefix: os_
+  # datacenter_{{ datacenter }}:
+  #   - "'datacenter' in hostvars[inventory_hostname]"
+  # env_{{ environment }}:
+  #   - "'environment' in hostvars[inventory_hostname]"

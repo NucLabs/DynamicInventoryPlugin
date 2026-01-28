@@ -544,16 +544,22 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             # Add all fields as host variables (except name and domainname which form the FQDN)
             for key, value in row.items():
                 if key not in ("name", "domainname"):
+                    # Strip whitespace from string values (common with SQL CHAR columns)
+                    if isinstance(value, str):
+                        value = value.strip()
                     self.inventory.set_variable(fqdn, key, value)
 
-                # Also set the original name and domainname as variables for reference
-                self.inventory.set_variable(fqdn, "mssql_name", row["name"])
-                self.inventory.set_variable(fqdn, "mssql_domainname", row["domainname"])
+            # Also set the original name and domainname as variables for reference
+            self.inventory.set_variable(fqdn, "mssql_name", str(row["name"]).strip())
+            self.inventory.set_variable(fqdn, "mssql_domainname", str(row["domainname"]).strip())
 
             # Apply constructed features (groups, keyed_groups, compose)
             # Get all variables for this host for constructed features
             hostvars = {}
             for key, value in row.items():
+                # Strip whitespace from string values
+                if isinstance(value, str):
+                    value = value.strip()
                 hostvars[key] = value
             hostvars["inventory_hostname"] = fqdn
 

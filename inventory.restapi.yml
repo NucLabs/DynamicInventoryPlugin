@@ -1,0 +1,7 @@
+---
+plugin: nuclabs.dyninv.restapi
+url: http://192.168.178.237:5000/server
+
+keyed_groups:
+  - key: somevar
+    prefix: os_
