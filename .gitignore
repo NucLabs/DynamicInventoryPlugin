@@ -8,7 +8,9 @@ __pycache__/
 *.so
 
 # Ansible collection symlinks (created by ansible-creator for local development)
-collections/
+# Ignore everything in collections/ except requirements.yml (needed for AWX)
+collections/*
+!collections/requirements.yml
 
 # Distribution / packaging
 .Python
