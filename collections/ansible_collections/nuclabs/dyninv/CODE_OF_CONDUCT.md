@@ -1,0 +1,1 @@
+/workspaces/DynamicInventoryPlugin/CODE_OF_CONDUCT.md

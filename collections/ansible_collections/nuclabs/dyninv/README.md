@@ -1,0 +1,1 @@
+/workspaces/DynamicInventoryPlugin/README.md

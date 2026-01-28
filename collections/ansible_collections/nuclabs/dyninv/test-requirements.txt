@@ -1,0 +1,1 @@
+/workspaces/DynamicInventoryPlugin/test-requirements.txt
