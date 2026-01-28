@@ -30,7 +30,21 @@ issues: http://example.com/issue/tracker
 # and '.git' are always filtered. Mutually exclusive with 'manifest'
 build_ignore:
   - .gitignore
+  - .isort.cfg
+  - .pre-commit-config.yaml
+  - .prettierignore
+  - .ruff_cache
+  - .devcontainer
+  - .github
+  - .vscode
   - changelogs/.plugin-cache.yaml
+  - collections
+  - tox-ansible.ini
+  - tox.ini
+  - test-requirements.txt
+  - pyproject.toml
+  - devfile.yaml
+  - AGENTS.md
 # A dict controlling use of manifest directives used in building the collection artifact. The key 'directives' is a
 # list of MANIFEST.in style
 # L(directives,https://packaging.python.org/en/latest/guides/using-manifest-in/#manifest-in-commands). The key
