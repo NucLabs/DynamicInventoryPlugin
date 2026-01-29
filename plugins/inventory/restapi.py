@@ -4,7 +4,7 @@
 """Dynamic inventory plugin that queries a REST API.
 
 This plugin retrieves host information from a REST API endpoint. The API must
-return a JSON array of objects containing at least 'name' and 'domainname' fields,
+return a JSON array of objects containing at least 'ComputerName' and 'DomainName' fields,
 which are combined to form the FQDN. All other fields become host variables.
 
 This plugin supports both open (no authentication) and bearer token authentication.
@@ -19,7 +19,7 @@ plugin_type: inventory
 short_description: Dynamic inventory from REST API
 description:
   - Retrieves inventory hosts from a REST API endpoint.
-  - Combines C(name) and C(domainname) fields from the response to create host FQDNs.
+  - Combines C(ComputerName) and C(DomainName) fields from the response to create host FQDNs.
   - All other fields from the response become host variables.
   - Supports both open (no authentication) and bearer token authentication.
 author:
@@ -41,7 +41,7 @@ options:
   url:
     description:
       - The REST API endpoint URL.
-      - Must return a JSON array of objects containing at least C(name) and C(domainname) fields.
+      - Must return a JSON array of objects containing at least C(ComputerName) and C(DomainName) fields.
     required: true
     type: str
     env:
@@ -105,9 +105,19 @@ options:
       - If V(false), skip invalid entries and continue.
     type: bool
     default: false
+  var_prefix:
+    description:
+      - Prefix to add to all host variables from the API response.
+      - Set to an empty string C('') for no prefix.
+      - Useful for namespacing variables to avoid collisions with other inventory sources.
+    required: false
+    type: str
+    default: ''
+    env:
+      - name: RESTAPI_VAR_PREFIX
 notes:
   - The REST API must return a JSON array of objects.
-  - Each object must contain at least C(name) and C(domainname) fields.
+  - Each object must contain at least C(ComputerName) and C(DomainName) fields.
   - Field names are normalized to lowercase for consistency.
   - String values are automatically trimmed of leading/trailing whitespace.
 seealso:
@@ -259,8 +269,11 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         # Add authorization header if using bearer token
         auth_method = self.get_option("auth_method")
         if auth_method == "bearer":
+            self.display.vvv("Using bearer token authentication")
             bearer_token = self.get_option("bearer_token")
             headers["Authorization"] = f"Bearer {bearer_token}"
+        else:
+            self.display.vvv("Using no authentication")
 
         return headers
 
@@ -364,7 +377,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         Raises:
             AnsibleParserError: If required fields are missing.
         """
-        required_fields = ("name", "domainname")
+        required_fields = ("computername", "domainname")
         missing_fields = [field for field in required_fields if field not in row]
 
         if missing_fields:
@@ -374,32 +387,32 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             )
             raise AnsibleParserError(msg)
 
-        if not row["name"] or not row["domainname"]:
+        if not row["computername"] or not row["domainname"]:
             self.display.warning(
-                f"Item {row_index} has empty 'name' or 'domainname' field, skipping."
+                f"Item {row_index} has empty 'computername' or 'domainname' field, skipping."
             )
             return False
 
         return True
 
-    def _build_fqdn(self, name: str, domainname: str) -> str:
-        """Build FQDN from name and domain name.
+    def _build_fqdn(self, computername: str, domainname: str) -> str:
+        """Build FQDN from computer name and domain name.
 
         Args:
-            name: The hostname part.
+            computername: The hostname part.
             domainname: The domain name part.
 
         Returns:
             The fully qualified domain name.
         """
         # Strip whitespace and ensure clean concatenation
-        name = str(name).strip()
+        computername = str(computername).strip()
         domainname = str(domainname).strip()
 
         # Handle cases where domainname might already start with a dot
         if domainname.startswith("."):
-            return f"{name}{domainname}"
-        return f"{name}.{domainname}"
+            return f"{computername}{domainname}"
+        return f"{computername}.{domainname}"
 
     def _populate_inventory(self, results: list[dict[str, Any]]) -> None:
         """Populate the inventory with hosts from API response.
@@ -408,31 +421,29 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             results: List of dictionaries from the API response.
         """
         strict = self.get_option("strict")
+        var_prefix = self.get_option("var_prefix") or ""
 
         for idx, row in enumerate(results):
             if not self._validate_row(row, idx):
                 continue
 
-            # Build the FQDN from name and domainname
-            fqdn = self._build_fqdn(row["name"], row["domainname"])
+            # Build the FQDN from computername and domainname
+            fqdn = self._build_fqdn(row["computername"], row["domainname"])
 
             # Add host to inventory
             self.inventory.add_host(fqdn)
 
-            # Add all fields as host variables (except name and domainname which form the FQDN)
+            # Add all fields as host variables with optional prefix
             for key, value in row.items():
-                if key not in ("name", "domainname"):
-                    # Strip whitespace from string values
-                    if isinstance(value, str):
-                        value = value.strip()
-                    self.inventory.set_variable(fqdn, key, value)
-
-            # Also set the original name and domainname as variables for reference
-            self.inventory.set_variable(fqdn, "restapi_name", str(row["name"]).strip())
-            self.inventory.set_variable(fqdn, "restapi_domainname", str(row["domainname"]).strip())
+                # Strip whitespace from string values
+                if isinstance(value, str):
+                    value = value.strip()
+                prefixed_key = f"{var_prefix}{key}"
+                self.inventory.set_variable(fqdn, prefixed_key, value)
 
             # Apply constructed features (groups, keyed_groups, compose)
             # Get all variables for this host for constructed features
+            # Note: hostvars for constructed features use unprefixed keys for easier access
             hostvars = {}
             for key, value in row.items():
                 # Strip whitespace from string values

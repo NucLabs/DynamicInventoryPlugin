@@ -31,12 +31,12 @@ connect_timeout: 30
 query_timeout: 120
 
 # SQL query to retrieve inventory data
-# REQUIRED columns: name, domainname
+# REQUIRED columns: ComputerName, DomainName
 # All other columns become host variables
 query: |
   SELECT
-    s.name,
-    s.domainname,
+    s.ComputerName,
+    s.DomainName,
     s.os_type,
     s.os_version,
     s.environment,
@@ -56,6 +56,12 @@ cache_connection: /tmp/ansible_inventory_cache
 
 # Strict mode - fail on templating errors
 strict: false
+
+# Optional: Prefix for all host variables from the database
+# Useful when combining multiple inventory sources to avoid variable name collisions
+# Default is empty string (no prefix)
+# Example: var_prefix: "mssql_" would create "mssql_os_type" instead of "os_type"
+# var_prefix: "mssql_"
 
 # Compose additional variables using Jinja2 expressions
 compose:

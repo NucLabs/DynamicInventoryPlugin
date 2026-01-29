@@ -4,7 +4,7 @@
 """Dynamic inventory plugin that queries a Microsoft SQL Server database.
 
 This plugin retrieves host information from a MSSQL database query. The query must
-return at least 'name' and 'domainname' fields, which are combined to form the FQDN.
+return at least 'ComputerName' and 'DomainName' fields, which are combined to form the FQDN.
 All other fields returned by the query become host variables.
 
 This plugin supports Kerberos authentication for environments that require it.
@@ -19,7 +19,7 @@ plugin_type: inventory
 short_description: Dynamic inventory from Microsoft SQL Server database
 description:
   - Retrieves inventory hosts from a Microsoft SQL Server database.
-  - Combines C(name) and C(domainname) fields from query results to create host FQDNs.
+  - Combines C(ComputerName) and C(DomainName) fields from query results to create host FQDNs.
   - All other fields from the query become host variables.
   - Supports Kerberos authentication for Active Directory integrated environments.
 author:
@@ -97,7 +97,7 @@ options:
   query:
     description:
       - The SQL query to execute.
-      - Must return at least C(name) and C(domainname) columns.
+      - Must return at least C(ComputerName) and C(DomainName) columns.
       - All other columns become host variables.
     required: true
     type: str
@@ -153,9 +153,19 @@ options:
     required: false
     type: bool
     default: true
+  var_prefix:
+    description:
+      - Prefix to add to all host variables from the query results.
+      - Set to an empty string C('') for no prefix.
+      - Useful for namespacing variables to avoid collisions with other inventory sources.
+    required: false
+    type: str
+    default: ''
+    env:
+      - name: MSSQL_VAR_PREFIX
 notes:
-  - The query must return C(name) and C(domainname) columns.
-  - The FQDN is constructed as C(name.domainname).
+  - The query must return C(ComputerName) and C(DomainName) columns.
+  - The FQDN is constructed as C(ComputerName.DomainName).
   - Column names are converted to lowercase for consistency.
   - NULL values in the database are converted to None in Python.
   - "Kerberos authentication requires:"
@@ -176,7 +186,7 @@ plugin: nuclabs.dyninv.mssql
 host: sqlserver.domain.com
 database: inventory_db
 query: |
-  SELECT name, domainname, os_type, environment, location
+  SELECT ComputerName, DomainName, os_type, environment, location
   FROM servers
   WHERE active = 1
 
@@ -226,7 +236,7 @@ auth_method: sql
 username: ansible_user
 password: "{{ lookup('env', 'MSSQL_PASSWORD') }}"
 query: |
-  SELECT name, domainname, os_type, environment, location
+  SELECT ComputerName, DomainName, os_type, environment, location
   FROM servers
   WHERE active = 1
 
@@ -243,8 +253,8 @@ password: !vault |
   ...
 query: |
   SELECT
-    s.name,
-    s.domainname,
+    s.ComputerName,
+    s.DomainName,
     s.os_type,
     s.environment,
     s.datacenter,
@@ -289,7 +299,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
     """Dynamic inventory plugin for Microsoft SQL Server databases.
 
     This plugin queries a MSSQL database and creates inventory hosts from the results.
-    The 'name' and 'domainname' fields are combined to create the FQDN, and all other
+    The 'ComputerName' and 'DomainName' fields are combined to create the FQDN, and all other
     fields become host variables.
     """
 
@@ -486,7 +496,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         Raises:
             AnsibleParserError: If required fields are missing.
         """
-        required_fields = ("name", "domainname")
+        required_fields = ("computername", "domainname")
         missing_fields = [field for field in required_fields if field not in row]
 
         if missing_fields:
@@ -496,32 +506,32 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             )
             raise AnsibleParserError(msg)
 
-        if not row["name"] or not row["domainname"]:
+        if not row["computername"] or not row["domainname"]:
             self.display.warning(
-                f"Row {row_index} has empty 'name' or 'domainname' field, skipping."
+                f"Row {row_index} has empty 'computername' or 'domainname' field, skipping."
             )
             return False
 
         return True
 
-    def _build_fqdn(self, name: str, domainname: str) -> str:
-        """Build FQDN from name and domain name.
+    def _build_fqdn(self, computername: str, domainname: str) -> str:
+        """Build FQDN from computer name and domain name.
 
         Args:
-            name: The hostname part.
+            computername: The hostname part.
             domainname: The domain name part.
 
         Returns:
             The fully qualified domain name.
         """
         # Strip whitespace and ensure clean concatenation
-        name = str(name).strip()
+        computername = str(computername).strip()
         domainname = str(domainname).strip()
 
         # Handle cases where domainname might already start with a dot
         if domainname.startswith("."):
-            return f"{name}{domainname}"
-        return f"{name}.{domainname}"
+            return f"{computername}{domainname}"
+        return f"{computername}.{domainname}"
 
     def _populate_inventory(self, results: list[dict[str, Any]]) -> None:
         """Populate the inventory with hosts from query results.
@@ -530,31 +540,29 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             results: List of dictionaries from the database query.
         """
         strict = self.get_option("strict")
+        var_prefix = self.get_option("var_prefix") or ""
 
         for idx, row in enumerate(results):
             if not self._validate_row(row, idx):
                 continue
 
-            # Build the FQDN from name and domainname
-            fqdn = self._build_fqdn(row["name"], row["domainname"])
+            # Build the FQDN from computername and domainname
+            fqdn = self._build_fqdn(row["computername"], row["domainname"])
 
             # Add host to inventory
             self.inventory.add_host(fqdn)
 
-            # Add all fields as host variables (except name and domainname which form the FQDN)
+            # Add all fields as host variables with optional prefix
             for key, value in row.items():
-                if key not in ("name", "domainname"):
-                    # Strip whitespace from string values (common with SQL CHAR columns)
-                    if isinstance(value, str):
-                        value = value.strip()
-                    self.inventory.set_variable(fqdn, key, value)
-
-            # Also set the original name and domainname as variables for reference
-            self.inventory.set_variable(fqdn, "mssql_name", str(row["name"]).strip())
-            self.inventory.set_variable(fqdn, "mssql_domainname", str(row["domainname"]).strip())
+                # Strip whitespace from string values (common with SQL CHAR columns)
+                if isinstance(value, str):
+                    value = value.strip()
+                prefixed_key = f"{var_prefix}{key}"
+                self.inventory.set_variable(fqdn, prefixed_key, value)
 
             # Apply constructed features (groups, keyed_groups, compose)
             # Get all variables for this host for constructed features
+            # Note: hostvars for constructed features use unprefixed keys for easier access
             hostvars = {}
             for key, value in row.items():
                 # Strip whitespace from string values

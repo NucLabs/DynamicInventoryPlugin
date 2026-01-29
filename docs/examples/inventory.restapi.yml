@@ -1,6 +1,12 @@
 ---
 # Example inventory configuration for the nuclabs.dyninv.restapi plugin
 # Save this file as inventory.restapi.yml
+#
+# The REST API must return a JSON array of objects with at least:
+#   - ComputerName: The hostname (e.g., "server01")
+#   - DomainName: The domain (e.g., "example.com")
+# These are combined to form the FQDN (e.g., "server01.example.com")
+# All other fields become host variables.
 
 plugin: nuclabs.dyninv.restapi
 url: http://api.example.com/servers
@@ -24,6 +30,12 @@ url: http://api.example.com/servers
 # Optional: Additional HTTP headers
 # headers:
 #   X-Custom-Header: "custom-value"
+
+# Optional: Prefix for all host variables from the API response
+# Useful when combining multiple inventory sources to avoid variable name collisions
+# Default is empty string (no prefix)
+# Example: var_prefix: "restapi_" would create "restapi_os_type" instead of "os_type"
+# var_prefix: "restapi_"
 
 # Optional: Enable caching
 # cache: true

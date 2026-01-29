@@ -210,16 +210,16 @@ class TestValidateRow:
     def test_validate_row_valid(self, inventory_plugin: InventoryModule) -> None:
         """Test validation of a valid row."""
         row: dict[str, Any] = {
-            "name": "server01",
+            "computername": "server01",
             "domainname": "example.com",
             "os": "linux",
         }
         result = inventory_plugin._validate_row(row, 0)
         assert result is True
 
-    def test_validate_row_empty_name(self, inventory_plugin: InventoryModule) -> None:
-        """Test validation fails with empty name."""
-        row: dict[str, Any] = {"name": "", "domainname": "example.com"}
+    def test_validate_row_empty_computername(self, inventory_plugin: InventoryModule) -> None:
+        """Test validation fails with empty computername."""
+        row: dict[str, Any] = {"computername": "", "domainname": "example.com"}
         result = inventory_plugin._validate_row(row, 0)
         assert result is False
         inventory_plugin.display.warning.assert_called()  # type: ignore[union-attr]
@@ -228,7 +228,7 @@ class TestValidateRow:
         self, inventory_plugin: InventoryModule
     ) -> None:
         """Test validation fails with empty domainname."""
-        row: dict[str, Any] = {"name": "server01", "domainname": ""}
+        row: dict[str, Any] = {"computername": "server01", "domainname": ""}
         result = inventory_plugin._validate_row(row, 0)
         assert result is False
 
@@ -236,7 +236,7 @@ class TestValidateRow:
         self, inventory_plugin: InventoryModule
     ) -> None:
         """Test validation fails with None values."""
-        row: dict[str, Any] = {"name": None, "domainname": "example.com"}
+        row: dict[str, Any] = {"computername": None, "domainname": "example.com"}
         result = inventory_plugin._validate_row(row, 0)
         assert result is False
 
@@ -259,7 +259,7 @@ class TestMakeRequest:
 
         mock_response = Mock()
         mock_response.json.return_value = [
-            {"name": "server01", "domainname": "example.com"},
+            {"computername": "server01", "domainname": "example.com"},
         ]
         mock_response.raise_for_status = Mock()
 
@@ -278,7 +278,7 @@ class TestMakeRequest:
                     results = inventory_plugin._make_request()
 
         assert len(results) == 1
-        assert results[0]["name"] == "server01"
+        assert results[0]["computername"] == "server01"
 
     def test_make_request_normalizes_keys(
         self, inventory_plugin: InventoryModule
@@ -295,14 +295,14 @@ class TestMakeRequest:
 
         mock_response = Mock()
         mock_response.json.return_value = [
-            {"Name": "server01", "DomainName": "example.com", "OS_TYPE": "linux"},
+            {"ComputerName": "server01", "DomainName": "example.com", "OS_TYPE": "linux"},
         ]
         mock_response.raise_for_status = Mock()
 
         with patch("requests.get", return_value=mock_response):
             results = inventory_plugin._make_request()
 
-        assert "name" in results[0]
+        assert "computername" in results[0]
         assert "domainname" in results[0]
         assert "os_type" in results[0]
 
@@ -437,6 +437,7 @@ class TestPopulateInventory:
             "compose": {},
             "groups": {},
             "keyed_groups": [],
+            "var_prefix": "",
         }
         inventory_plugin._set_composite_vars = MagicMock()  # type: ignore[method-assign]
         inventory_plugin._add_host_to_composed_groups = MagicMock()  # type: ignore[method-assign]
@@ -444,7 +445,7 @@ class TestPopulateInventory:
 
         results: list[dict[str, Any]] = [
             {
-                "name": "server01",
+                "computername": "server01",
                 "domainname": "example.com",
                 "os_type": "linux",
                 "environment": "prod",
@@ -463,10 +464,10 @@ class TestPopulateInventory:
             "server01.example.com", "environment", "prod"
         )
         inventory_plugin.inventory.set_variable.assert_any_call(
-            "server01.example.com", "restapi_name", "server01"
+            "server01.example.com", "computername", "server01"
         )
         inventory_plugin.inventory.set_variable.assert_any_call(
-            "server01.example.com", "restapi_domainname", "example.com"
+            "server01.example.com", "domainname", "example.com"
         )
 
     def test_populate_inventory_multiple_hosts(
@@ -478,20 +479,60 @@ class TestPopulateInventory:
             "compose": {},
             "groups": {},
             "keyed_groups": [],
+            "var_prefix": "",
         }
         inventory_plugin._set_composite_vars = MagicMock()  # type: ignore[method-assign]
         inventory_plugin._add_host_to_composed_groups = MagicMock()  # type: ignore[method-assign]
         inventory_plugin._add_host_to_keyed_groups = MagicMock()  # type: ignore[method-assign]
 
         results: list[dict[str, Any]] = [
-            {"name": "server01", "domainname": "example.com"},
-            {"name": "server02", "domainname": "example.com"},
-            {"name": "server03", "domainname": "other.com"},
+            {"computername": "server01", "domainname": "example.com"},
+            {"computername": "server02", "domainname": "example.com"},
+            {"computername": "server03", "domainname": "other.com"},
         ]
 
         inventory_plugin._populate_inventory(results)
 
         assert inventory_plugin.inventory.add_host.call_count == 3
+
+    def test_populate_inventory_with_var_prefix(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test populating inventory with a variable prefix."""
+        inventory_plugin._options = {
+            "strict": False,
+            "compose": {},
+            "groups": {},
+            "keyed_groups": [],
+            "var_prefix": "restapi_",
+        }
+        inventory_plugin._set_composite_vars = MagicMock()  # type: ignore[method-assign]
+        inventory_plugin._add_host_to_composed_groups = MagicMock()  # type: ignore[method-assign]
+        inventory_plugin._add_host_to_keyed_groups = MagicMock()  # type: ignore[method-assign]
+
+        results: list[dict[str, Any]] = [
+            {
+                "computername": "server01",
+                "domainname": "example.com",
+                "os_type": "linux",
+            }
+        ]
+
+        inventory_plugin._populate_inventory(results)
+
+        inventory_plugin.inventory.add_host.assert_called_once_with(
+            "server01.example.com"
+        )
+        # All variables should have the prefix
+        inventory_plugin.inventory.set_variable.assert_any_call(
+            "server01.example.com", "restapi_os_type", "linux"
+        )
+        inventory_plugin.inventory.set_variable.assert_any_call(
+            "server01.example.com", "restapi_computername", "server01"
+        )
+        inventory_plugin.inventory.set_variable.assert_any_call(
+            "server01.example.com", "restapi_domainname", "example.com"
+        )
 
     def test_populate_inventory_strips_whitespace(
         self, inventory_plugin: InventoryModule
@@ -502,6 +543,7 @@ class TestPopulateInventory:
             "compose": {},
             "groups": {},
             "keyed_groups": [],
+            "var_prefix": "",
         }
         inventory_plugin._set_composite_vars = MagicMock()  # type: ignore[method-assign]
         inventory_plugin._add_host_to_composed_groups = MagicMock()  # type: ignore[method-assign]
@@ -509,7 +551,7 @@ class TestPopulateInventory:
 
         results: list[dict[str, Any]] = [
             {
-                "name": "server01  ",
+                "computername": "server01  ",
                 "domainname": "  example.com",
                 "os_type": "  linux  ",
             }
@@ -533,15 +575,16 @@ class TestPopulateInventory:
             "compose": {},
             "groups": {},
             "keyed_groups": [],
+            "var_prefix": "",
         }
         inventory_plugin._set_composite_vars = MagicMock()  # type: ignore[method-assign]
         inventory_plugin._add_host_to_composed_groups = MagicMock()  # type: ignore[method-assign]
         inventory_plugin._add_host_to_keyed_groups = MagicMock()  # type: ignore[method-assign]
 
         results: list[dict[str, Any]] = [
-            {"name": "server01", "domainname": "example.com"},
-            {"name": "", "domainname": "example.com"},  # Invalid - empty name
-            {"name": "server03", "domainname": "example.com"},
+            {"computername": "server01", "domainname": "example.com"},
+            {"computername": "", "domainname": "example.com"},  # Invalid - empty computername
+            {"computername": "server03", "domainname": "example.com"},
         ]
 
         inventory_plugin._populate_inventory(results)

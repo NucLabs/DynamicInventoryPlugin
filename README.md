@@ -9,7 +9,7 @@ This collection includes a dynamic inventory plugin that retrieves hosts from a 
 ### Features
 
 - Queries MSSQL database for host inventory
-- Combines `name` and `domainname` fields to create FQDNs
+- Combines `ComputerName` and `DomainName` fields to create FQDNs
 - All other query columns become host variables
 - Supports Kerberos (default) and SQL Server authentication
 - Supports constructed features (groups, keyed_groups, compose)
@@ -38,7 +38,7 @@ plugin: nuclabs.dyninv.mssql
 host: sqlserver.domain.com
 database: inventory_db
 query: |
-  SELECT name, domainname, os_type, environment
+  SELECT ComputerName, DomainName, os_type, environment
   FROM servers
   WHERE active = 1
 ```
@@ -91,9 +91,13 @@ plugin: nuclabs.dyninv.mssql
 host: sqlserver.domain.com
 database: cmdb
 query: |
-  SELECT name, domainname, os_type, environment, datacenter
+  SELECT ComputerName, DomainName, os_type, environment, datacenter
   FROM servers
   WHERE active = 1
+
+# Optional: Add a prefix to all host variables to avoid naming collisions
+# when combining multiple inventory sources (default: empty string)
+var_prefix: "mssql_"
 
 # Create groups based on variable values
 keyed_groups:
@@ -124,6 +128,60 @@ ansible-inventory -i inventory.mssql.yml --graph --vars env_prod
 ```
 
 For full documentation, see `ansible-doc -t inventory nuclabs.dyninv.mssql`.
+
+## REST API Dynamic Inventory Plugin
+
+The collection also includes a dynamic inventory plugin that retrieves hosts from a REST API endpoint.
+
+### Features
+
+- Queries any REST API returning JSON data
+- Combines `ComputerName` and `DomainName` fields to create FQDNs
+- All other fields in the JSON response become host variables
+- Supports no authentication or Bearer token authentication
+- Configurable variable prefix to avoid naming collisions
+- Supports constructed features (groups, keyed_groups, compose)
+- Caching support
+
+### Requirements
+
+- Python library: `requests`
+
+### Quick Start
+
+1. Install the collection and dependencies:
+
+```bash
+ansible-galaxy collection install nuclabs.dyninv
+pip install requests
+```
+
+2. Create an inventory file (e.g., `inventory.restapi.yml`):
+
+```yaml
+---
+plugin: nuclabs.dyninv.restapi
+url: http://api.example.com/servers
+
+# Optional: Add a prefix to all host variables (default: empty string)
+var_prefix: "restapi_"
+
+# Optional: Bearer token authentication
+# auth_method: bearer
+# bearer_token: "{{ lookup('env', 'API_TOKEN') }}"
+```
+
+3. Test the inventory:
+
+```bash
+# List all hosts as JSON
+ansible-inventory -i inventory.restapi.yml --list
+
+# Show inventory in YAML format  
+ansible-inventory -i inventory.restapi.yml --list --yaml
+```
+
+For full documentation, see `ansible-doc -t inventory nuclabs.dyninv.restapi`.
 
 <!--start requires_ansible-->
 <!--end requires_ansible-->
