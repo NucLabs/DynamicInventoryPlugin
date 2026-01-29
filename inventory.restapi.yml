@@ -1,6 +1,6 @@
 ---
 plugin: nuclabs.dyninv.restapi
-url: http://192.168.178.237:5000/server
+url: "{{ lookup('env', 'RESTAPI_URL') }}"
 
 keyed_groups:
   - key: somevar
