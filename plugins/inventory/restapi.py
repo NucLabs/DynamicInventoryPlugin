@@ -190,7 +190,7 @@ compose:
   custom_var: "'prefix_' + name"
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Dict, List, Union
 
 from ansible.errors import AnsibleError, AnsibleParserError
 from ansible.plugins.inventory import BaseInventoryPlugin, Cacheable, Constructable
@@ -251,13 +251,13 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
                 msg = "The 'bearer_token' option is required when auth_method is 'bearer'."
                 raise AnsibleParserError(msg)
 
-    def _build_headers(self) -> dict[str, str]:
+    def _build_headers(self) -> Dict[str, str]:
         """Build HTTP headers for the API request.
 
         Returns:
             Dictionary of HTTP headers.
         """
-        headers: dict[str, str] = {
+        headers: Dict[str, str] = {
             "Accept": "application/json",
             "Content-Type": "application/json",
         }
@@ -277,7 +277,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
 
         return headers
 
-    def _make_request(self) -> list[dict[str, Any]]:
+    def _make_request(self) -> List[Dict[str, Any]]:
         """Make the HTTP request to the REST API.
 
         Returns:
@@ -303,7 +303,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         headers = self._build_headers()
 
         # Configure SSL verification
-        verify: bool | str = validate_certs
+        verify: Union[bool, str] = validate_certs
         if validate_certs and ca_cert:
             verify = ca_cert
 
@@ -352,7 +352,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             raise AnsibleError(msg)
 
         # Normalize field names to lowercase
-        results: list[dict[str, Any]] = []
+        results: List[Dict[str, Any]] = []
         for item in data:
             if not isinstance(item, dict):
                 self.display.warning(
@@ -364,7 +364,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
 
         return results
 
-    def _validate_row(self, row: dict[str, Any], row_index: int) -> bool:
+    def _validate_row(self, row: Dict[str, Any], row_index: int) -> bool:
         """Validate that a row contains required fields.
 
         Args:
@@ -414,7 +414,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             return f"{computername}{domainname}"
         return f"{computername}.{domainname}"
 
-    def _populate_inventory(self, results: list[dict[str, Any]]) -> None:
+    def _populate_inventory(self, results: List[Dict[str, Any]]) -> None:
         """Populate the inventory with hosts from API response.
 
         Args:
@@ -444,7 +444,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             # Apply constructed features (groups, keyed_groups, compose)
             # Get all variables for this host for constructed features
             # Note: hostvars for constructed features use unprefixed keys for easier access
-            hostvars = {}
+            hostvars: Dict[str, Any] = {}
             for key, value in row.items():
                 # Strip whitespace from string values
                 if isinstance(value, str):
