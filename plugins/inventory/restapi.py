@@ -22,6 +22,7 @@ description:
   - Combines C(ComputerName) and C(DomainName) fields from the response to create host FQDNs.
   - All other fields from the response become host variables.
   - Supports both open (no authentication) and bearer token authentication.
+  - Supports fetching bearer tokens from CyberArk Conjur.
 author:
   - Your Name (@yourhandle)
 version_added: "1.0.0"
@@ -60,13 +61,24 @@ options:
   bearer_token:
     description:
       - The bearer token for authentication.
-      - Required when O(auth_method=bearer).
+      - Required when O(auth_method=bearer) unless O(conjur_variable) is set.
       - Ignored when O(auth_method=none).
     required: false
     type: str
     env:
       - name: RESTAPI_BEARER_TOKEN
     no_log: true
+  conjur_variable:
+    description:
+      - Path to a CyberArk Conjur variable containing the bearer token.
+      - When set, the plugin will fetch the token from Conjur instead of using O(bearer_token).
+      - Requires the C(cyberark.conjur) collection to be installed.
+      - Requires proper Conjur authentication configuration (environment variables or conjur identity files).
+      - Takes precedence over O(bearer_token) if both are set.
+    required: false
+    type: str
+    env:
+      - name: RESTAPI_CONJUR_VARIABLE
   timeout:
     description:
       - The request timeout in seconds.
@@ -120,8 +132,13 @@ notes:
   - Each object must contain at least C(ComputerName) and C(DomainName) fields.
   - Field names are normalized to lowercase for consistency.
   - String values are automatically trimmed of leading/trailing whitespace.
+  - When using O(conjur_variable), ensure Conjur authentication is configured via environment
+    variables (CONJUR_ACCOUNT, CONJUR_APPLIANCE_URL, CONJUR_AUTHN_LOGIN, CONJUR_AUTHN_API_KEY)
+    or identity files.
 seealso:
   - module: ansible.builtin.uri
+  - plugin: cyberark.conjur.conjur_variable
+    plugin_type: lookup
 """
 
 EXAMPLES = r"""
@@ -136,6 +153,13 @@ plugin: nuclabs.dyninv.restapi
 url: https://api.example.com/servers
 auth_method: bearer
 bearer_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+# Bearer token from CyberArk Conjur
+---
+plugin: nuclabs.dyninv.restapi
+url: https://api.example.com/servers
+auth_method: bearer
+conjur_variable: "SOME/dev/abc/api_token"
 
 # With custom headers
 ---
@@ -190,7 +214,7 @@ compose:
   custom_var: "'prefix_' + name"
 """
 
-from typing import TYPE_CHECKING, Any, Dict, List, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 from ansible.errors import AnsibleError, AnsibleParserError
 from ansible.plugins.inventory import BaseInventoryPlugin, Cacheable, Constructable
@@ -209,6 +233,11 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
     """
 
     NAME = "nuclabs.dyninv.restapi"
+
+    def __init__(self) -> None:
+        """Initialize the inventory module."""
+        super().__init__()
+        self._conjur_token: Optional[str] = None
 
     def verify_file(self, path: str) -> bool:
         """Verify that the inventory source file is valid.
@@ -233,6 +262,57 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
                 valid = True
         return valid
 
+    def _fetch_conjur_token(self, variable_path: str) -> str:
+        """Fetch bearer token from CyberArk Conjur.
+
+        Args:
+            variable_path: The path to the Conjur variable containing the token.
+
+        Returns:
+            The token value from Conjur.
+
+        Raises:
+            AnsibleError: If the Conjur lookup fails or collection is not installed.
+        """
+        try:
+            # Import the lookup loader to access the Conjur lookup plugin
+            from ansible.plugins.loader import (  # pylint: disable=import-outside-toplevel
+                lookup_loader,
+            )
+        except ImportError as err:
+            msg = "Failed to import Ansible lookup loader."
+            raise AnsibleError(msg) from err
+
+        self.display.vvv(f"Fetching bearer token from Conjur variable: {variable_path}")
+
+        # Get the Conjur lookup plugin
+        conjur_lookup = lookup_loader.get("cyberark.conjur.conjur_variable")
+        if conjur_lookup is None:
+            msg = (
+                "The 'cyberark.conjur' collection is required for Conjur integration. "
+                "Install it with: ansible-galaxy collection install cyberark.conjur"
+            )
+            raise AnsibleError(msg)
+
+        try:
+            # Run the lookup - it returns a list, we need the first element
+            result = conjur_lookup.run([variable_path], variables={}, **{})
+            if not result:
+                msg = f"Conjur variable '{variable_path}' returned empty result."
+                raise AnsibleError(msg)
+            token = result[0]
+            if not token:
+                msg = f"Conjur variable '{variable_path}' contains empty value."
+                raise AnsibleError(msg)
+            self.display.vvv("Successfully retrieved bearer token from Conjur")
+            return str(token)
+        except AnsibleError:
+            # Re-raise AnsibleErrors as-is
+            raise
+        except Exception as err:
+            msg = f"Failed to fetch token from Conjur variable '{variable_path}': {err}"
+            raise AnsibleError(msg) from err
+
     def _validate_options(self) -> None:
         """Validate plugin configuration options.
 
@@ -247,9 +327,30 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         auth_method = self.get_option("auth_method")
         if auth_method == "bearer":
             bearer_token = self.get_option("bearer_token")
-            if not bearer_token:
-                msg = "The 'bearer_token' option is required when auth_method is 'bearer'."
+            conjur_variable = self.get_option("conjur_variable")
+
+            if not bearer_token and not conjur_variable:
+                msg = (
+                    "Either 'bearer_token' or 'conjur_variable' is required "
+                    "when auth_method is 'bearer'."
+                )
                 raise AnsibleParserError(msg)
+
+            # Fetch token from Conjur if configured (takes precedence over bearer_token)
+            if conjur_variable:
+                self._conjur_token = self._fetch_conjur_token(conjur_variable)
+
+    def _get_bearer_token(self) -> str:
+        """Get the bearer token from Conjur cache or configuration.
+
+        Returns:
+            The bearer token string.
+        """
+        # Prefer Conjur token if it was fetched
+        if self._conjur_token:
+            return self._conjur_token
+        # Fall back to configured bearer_token
+        return self.get_option("bearer_token") or ""
 
     def _build_headers(self) -> Dict[str, str]:
         """Build HTTP headers for the API request.
@@ -270,7 +371,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         auth_method = self.get_option("auth_method")
         if auth_method == "bearer":
             self.display.vvv("Using bearer token authentication")
-            bearer_token = self.get_option("bearer_token")
+            bearer_token = self._get_bearer_token()
             headers["Authorization"] = f"Bearer {bearer_token}"
         else:
             self.display.vvv("Using no authentication")
