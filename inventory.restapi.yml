@@ -1,7 +1,36 @@
+# ---
+# plugin: nuclabs.dyninv.restapi
+# url: "{{ lookup('env', 'RESTAPI_URL') }}"
+
+# keyed_groups:
+#   - key: somevar
+#     prefix: os_
 ---
 plugin: nuclabs.dyninv.restapi
-url: "{{ lookup('env', 'RESTAPI_URL') }}"
+url: http://192.168.178.237:5000/server
+auth_method: bearer
+# bearer_token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJodHRwOi8vc2NoZW1hcy54bWxzb2FwLm9yZy93cy8yMDA1LzA1L2lkZW50aXR5L2NsYWltcy9uYW1lIjoiYW5zaWJsZSIsImh0dHA6Ly9zY2hlbWFzLnhtbHNvYXAub3JnL3dzLzIwMDUvMDUvaWRlbnRpdHkvY2xhaW1zL2hhc2giOiI0ZGMzNmY4ZC00NmQ3LTQ0ZGUtOWZkMS0wZjcxMWQ4NzRiMzUiLCJzdWIiOiJQb3dlclNoZWxsVW5pdmVyc2FsIiwiaHR0cDovL3NjaGVtYXMubWljcm9zb2Z0LmNvbS93cy8yMDA4LzA2L2lkZW50aXR5L2NsYWltcy9yb2xlIjoiRXhlY3V0ZSIsIm5iZiI6MTc2OTY4NTI2MiwiZXhwIjoxODAxMjIxMjQwLCJpc3MiOiJJcm9ubWFuU29mdHdhcmUiLCJhdWQiOiJQb3dlclNoZWxsVW5pdmVyc2FsIn0.BbMxcsuoIEyfMKQO7XBC_yUl4b_bkYxgTXrDKD5Coco
+
+var_prefix: "mcmt_"
 
 keyed_groups:
-  - key: somevar
-    prefix: os_
+  - key: mcmt_domainname
+    prefix: domain
+  - key: mcmt_os
+    prefix: os
+  - key: mcmt_productlijn
+    prefix: pl
+
+compose:
+  NexusUri: >-
+    'https://nexus1' if productlijn == 'Productlijn C' else 'https://nexus2'
+
+  NecusUri2: >-
+    'https://nexus1' if productlijn == 'Productlijn A' else
+    'https://nexus2' if productlijn == 'Productlijn B' else
+    'https://nexus3' if productlijn == 'Productlijn C' else
+    'https://nexus4' if productlijn == 'Productlijn D' else
+    'https://nexus-default'
+
+groups:
+  dom1plb: mcmt_domainname == 'domain1' and mcmt_productlijn == 'Productlijn B

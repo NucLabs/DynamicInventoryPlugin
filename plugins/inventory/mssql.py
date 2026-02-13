@@ -171,8 +171,9 @@ notes:
   - "Kerberos authentication requires:"
   - "  1. FreeTDS compiled with Kerberos support (libgssapi)"
   - "  2. Proper krb5.conf configuration pointing to your Active Directory domain"
-  - "  3. A valid Kerberos ticket obtained via C(kinit username@REALM) before running"
+  - "  3. The E(SQL_USER) and E(SQL_PASS) environment variables set for automatic kinit"
   - "  4. The SQL Server host should be specified as FQDN for SPN resolution"
+  - The plugin will automatically run C(kinit) using the E(SQL_USER) and E(SQL_PASS) environment variables to obtain a Kerberos ticket before connecting.
   - For automated/unattended Kerberos authentication, consider using a keytab file with C(kinit -k -t /path/to/keytab principal@REALM).
 seealso:
   - module: community.general.mssql_db
@@ -281,6 +282,7 @@ groups:
   production: environment == 'prod'
 """
 
+import os  # noqa: E402
 from typing import TYPE_CHECKING, Any  # noqa: E402
 
 from ansible.errors import AnsibleError, AnsibleParserError  # noqa: E402
@@ -406,14 +408,80 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
 
         return connection
 
-    def _check_kerberos_ticket(self) -> None:
-        """Check if a valid Kerberos ticket exists.
+    def _perform_kinit(self) -> None:
+        """Obtain a Kerberos ticket using credentials from environment variables.
+
+        Reads SQL_USER and SQL_PASS from the environment and runs kinit to
+        initialize a Kerberos ticket-granting ticket (TGT).  The SQL_USER value
+        should be in the form ``username@REALM``.
 
         Raises:
-            AnsibleError: If no valid Kerberos ticket is found.
+            AnsibleError: If environment variables are missing or kinit fails.
         """
         import shutil  # pylint: disable=import-outside-toplevel
         import subprocess  # pylint: disable=import-outside-toplevel
+
+        sql_user = os.environ.get("SQL_USER")
+        sql_pass = os.environ.get("SQL_PASS")
+
+        if not sql_user or not sql_pass:
+            msg = (
+                "Kerberos authentication requires the SQL_USER and SQL_PASS "
+                "environment variables to be set. SQL_USER should be in the "
+                "form 'username@REALM'."
+            )
+            raise AnsibleError(msg)
+
+        kinit_path = shutil.which("kinit")
+        if not kinit_path:
+            msg = (
+                "The 'kinit' command was not found on the system PATH. "
+                "Install a Kerberos client (e.g. krb5-workstation) to use "
+                "Kerberos authentication."
+            )
+            raise AnsibleError(msg)
+
+        self.display.vvv(f"Running kinit for principal {sql_user}")
+
+        try:
+            result = subprocess.run(
+                [kinit_path, sql_user],
+                input=sql_pass,
+                capture_output=True,
+                text=True,
+                timeout=30,
+                check=False,
+            )
+            if result.returncode != 0:
+                stderr = result.stderr.strip()
+                msg = (
+                    f"kinit failed for principal '{sql_user}': {stderr}. "
+                    "Verify that SQL_USER (e.g. 'user@DOMAIN.COM') and "
+                    "SQL_PASS are correct and that the KDC is reachable."
+                )
+                raise AnsibleError(msg)
+            self.display.vvv("kinit succeeded – Kerberos TGT obtained")
+        except subprocess.TimeoutExpired as err:
+            msg = (
+                "kinit timed out. Verify that the Kerberos KDC is reachable "
+                "and that krb5.conf is configured correctly."
+            )
+            raise AnsibleError(msg) from err
+
+    def _check_kerberos_ticket(self) -> None:
+        """Ensure a valid Kerberos ticket exists, obtaining one if necessary.
+
+        Runs kinit using the SQL_USER and SQL_PASS environment variables to
+        obtain a fresh ticket, then verifies the ticket with klist.
+
+        Raises:
+            AnsibleError: If a valid Kerberos ticket cannot be obtained.
+        """
+        import shutil  # pylint: disable=import-outside-toplevel
+        import subprocess  # pylint: disable=import-outside-toplevel
+
+        # Obtain a fresh Kerberos ticket from environment credentials
+        self._perform_kinit()
 
         klist_path = shutil.which("klist")
         if not klist_path:
@@ -432,13 +500,12 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             )
             if result.returncode != 0:
                 msg = (
-                    "No valid Kerberos ticket found. Please obtain a ticket using "
-                    "'kinit username@REALM' before running this inventory plugin. "
-                    "For automated environments, consider using a keytab file: "
-                    "'kinit -k -t /path/to/keytab principal@REALM'"
+                    "No valid Kerberos ticket found even after running kinit. "
+                    "Check that SQL_USER and SQL_PASS are correct, that the KDC "
+                    "is reachable, and that krb5.conf is properly configured."
                 )
                 raise AnsibleError(msg)
-            self.display.vvv("Valid Kerberos ticket found")
+            self.display.vvv("Valid Kerberos ticket confirmed")
         except subprocess.TimeoutExpired:
             self.display.warning("Timeout checking Kerberos ticket, proceeding anyway")
         except FileNotFoundError:

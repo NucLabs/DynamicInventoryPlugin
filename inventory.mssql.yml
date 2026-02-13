@@ -3,7 +3,7 @@ plugin: nuclabs.dyninv.mssql
 host: server2.nuclabs.nl
 database: test
 query: |
-  SELECT *
+  SELECT TOP (3) *
   FROM servers
 
 keyed_groups:

@@ -325,6 +325,95 @@ class TestGetConnection:
                 assert result == mock_connection
 
 
+class TestPerformKinit:
+    """Tests for the _perform_kinit method."""
+
+    def test_perform_kinit_success(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that kinit succeeds with valid environment variables."""
+        env = {"SQL_USER": "user@DOMAIN.COM", "SQL_PASS": "secret"}
+        with patch.dict("os.environ", env, clear=False):
+            with patch("shutil.which", return_value="/usr/bin/kinit"):
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0)
+                    inventory_plugin._perform_kinit()
+                    mock_run.assert_called_once_with(
+                        ["/usr/bin/kinit", "user@DOMAIN.COM"],
+                        input="secret",
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        check=False,
+                    )
+
+    def test_perform_kinit_missing_sql_user(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that missing SQL_USER raises an error."""
+        env = {"SQL_PASS": "secret"}
+        with patch.dict("os.environ", env, clear=True):
+            from ansible.errors import AnsibleError
+
+            with pytest.raises(AnsibleError, match="SQL_USER and SQL_PASS"):
+                inventory_plugin._perform_kinit()
+
+    def test_perform_kinit_missing_sql_pass(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that missing SQL_PASS raises an error."""
+        env = {"SQL_USER": "user@DOMAIN.COM"}
+        with patch.dict("os.environ", env, clear=True):
+            from ansible.errors import AnsibleError
+
+            with pytest.raises(AnsibleError, match="SQL_USER and SQL_PASS"):
+                inventory_plugin._perform_kinit()
+
+    def test_perform_kinit_no_kinit_binary(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that missing kinit binary raises an error."""
+        env = {"SQL_USER": "user@DOMAIN.COM", "SQL_PASS": "secret"}
+        with patch.dict("os.environ", env, clear=False):
+            with patch("shutil.which", return_value=None):
+                from ansible.errors import AnsibleError
+
+                with pytest.raises(AnsibleError, match="kinit.*not found"):
+                    inventory_plugin._perform_kinit()
+
+    def test_perform_kinit_failure(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that kinit failure raises an error with details."""
+        env = {"SQL_USER": "user@DOMAIN.COM", "SQL_PASS": "wrong"}
+        with patch.dict("os.environ", env, clear=False):
+            with patch("shutil.which", return_value="/usr/bin/kinit"):
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(
+                        returncode=1,
+                        stderr="kinit: KDC reply did not match expectations",
+                    )
+                    from ansible.errors import AnsibleError
+
+                    with pytest.raises(AnsibleError, match="kinit failed"):
+                        inventory_plugin._perform_kinit()
+
+    def test_perform_kinit_timeout(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that kinit timeout raises an error."""
+        import subprocess
+
+        env = {"SQL_USER": "user@DOMAIN.COM", "SQL_PASS": "secret"}
+        with patch.dict("os.environ", env, clear=False):
+            with patch("shutil.which", return_value="/usr/bin/kinit"):
+                with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("kinit", 30)):
+                    from ansible.errors import AnsibleError
+
+                    with pytest.raises(AnsibleError, match="kinit timed out"):
+                        inventory_plugin._perform_kinit()
+
+
 class TestKerberosAuthentication:
     """Tests for Kerberos authentication functionality."""
 
@@ -332,26 +421,46 @@ class TestKerberosAuthentication:
         self, inventory_plugin: InventoryModule
     ) -> None:
         """Test that Kerberos ticket check passes with valid ticket."""
-        with patch("shutil.which", return_value="/usr/bin/klist"):
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0)
-                # Should not raise
-                inventory_plugin._check_kerberos_ticket()
-                mock_run.assert_called_once()
+        with patch.object(inventory_plugin, "_perform_kinit"):
+            with patch("shutil.which", return_value="/usr/bin/klist"):
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0)
+                    inventory_plugin._check_kerberos_ticket()
+                    mock_run.assert_called_once()
 
     def test_kerberos_check_ticket_no_klist(
         self, inventory_plugin: InventoryModule
     ) -> None:
         """Test that missing klist issues warning but doesn't fail."""
-        with patch("shutil.which", return_value=None):
-            # Should not raise, just warn
-            inventory_plugin._check_kerberos_ticket()
-            inventory_plugin.display.warning.assert_called()  # type: ignore[union-attr]
+        with patch.object(inventory_plugin, "_perform_kinit"):
+            with patch("shutil.which", return_value=None):
+                inventory_plugin._check_kerberos_ticket()
+                inventory_plugin.display.warning.assert_called()  # type: ignore[union-attr]
+
+    def test_kerberos_check_ticket_calls_kinit_first(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that _check_kerberos_ticket calls _perform_kinit before klist."""
+        call_order: list[str] = []
+
+        def mock_kinit() -> None:
+            call_order.append("kinit")
+
+        with patch.object(inventory_plugin, "_perform_kinit", side_effect=mock_kinit):
+            with patch("shutil.which", return_value="/usr/bin/klist"):
+                with patch("subprocess.run") as mock_run:
+                    mock_run.return_value = MagicMock(returncode=0)
+
+                    def record_klist(*args: Any, **kwargs: Any) -> MagicMock:
+                        call_order.append("klist")
+                        return MagicMock(returncode=0)
+
+                    mock_run.side_effect = record_klist
+                    inventory_plugin._check_kerberos_ticket()
+                    assert call_order == ["kinit", "klist"]
 
     def test_kerberos_default_auth_method(self) -> None:
         """Test that Kerberos is the default authentication method."""
-        # The default in DOCUMENTATION is 'kerberos'
-        # This is a documentation test
         from plugins.inventory.mssql import DOCUMENTATION
 
         assert "default: kerberos" in DOCUMENTATION
@@ -371,7 +480,6 @@ class TestKerberosAuthentication:
             "tds_version": "7.3",
         }
 
-        # Mock pymssql to avoid import issues
         mock_pymssql = MagicMock()
         with patch.dict("sys.modules", {"pymssql": mock_pymssql}):
             from ansible.errors import AnsibleError
