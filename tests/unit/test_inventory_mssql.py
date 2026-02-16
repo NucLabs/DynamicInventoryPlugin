@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -325,6 +326,53 @@ class TestGetConnection:
                 assert result == mock_connection
 
 
+class TestSetupCcache:
+    """Tests for the _setup_ccache method."""
+
+    def test_setup_ccache_creates_temp_file(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that _setup_ccache creates a temporary credential cache file."""
+        try:
+            result = inventory_plugin._setup_ccache()
+            assert result.startswith("FILE:")
+            assert "mssql_krb_" in result
+            assert os.environ.get("KRB5CCNAME") == result
+        finally:
+            inventory_plugin._cleanup_ccache()
+
+    def test_setup_ccache_reuses_existing(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that _setup_ccache reuses the same temp file on repeated calls."""
+        try:
+            first = inventory_plugin._setup_ccache()
+            second = inventory_plugin._setup_ccache()
+            assert first == second
+        finally:
+            inventory_plugin._cleanup_ccache()
+
+
+class TestCleanupCcache:
+    """Tests for the _cleanup_ccache method."""
+
+    def test_cleanup_ccache_removes_env_var(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that _cleanup_ccache removes KRB5CCNAME from the environment."""
+        inventory_plugin._setup_ccache()
+        assert "KRB5CCNAME" in os.environ
+        inventory_plugin._cleanup_ccache()
+        assert "KRB5CCNAME" not in os.environ
+        assert inventory_plugin._kerb_ccache is None
+
+    def test_cleanup_ccache_noop_when_no_ccache(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that _cleanup_ccache is safe to call when no ccache exists."""
+        inventory_plugin._cleanup_ccache()  # Should not raise
+
+
 class TestPerformKinit:
     """Tests for the _perform_kinit method."""
 
@@ -335,17 +383,91 @@ class TestPerformKinit:
         env = {"SQL_USER": "user@DOMAIN.COM", "SQL_PASS": "secret"}
         with patch.dict("os.environ", env, clear=False):
             with patch("shutil.which", return_value="/usr/bin/kinit"):
-                with patch("subprocess.run") as mock_run:
-                    mock_run.return_value = MagicMock(returncode=0)
-                    inventory_plugin._perform_kinit()
-                    mock_run.assert_called_once_with(
-                        ["/usr/bin/kinit", "user@DOMAIN.COM"],
-                        input="secret",
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                        check=False,
-                    )
+                with patch("subprocess.Popen") as mock_popen:
+                    mock_proc = MagicMock()
+                    mock_proc.communicate.return_value = (b"", b"")
+                    mock_proc.returncode = 0
+                    mock_popen.return_value = mock_proc
+                    try:
+                        inventory_plugin._perform_kinit()
+                    finally:
+                        inventory_plugin._cleanup_ccache()
+
+                    mock_popen.assert_called_once()
+                    call_kwargs = mock_popen.call_args
+                    # Verify kinit was called with the expected command
+                    assert call_kwargs[1]["env"]["KRB5CCNAME"].startswith("FILE:")
+                    assert call_kwargs[0][0] == ["/usr/bin/kinit", "user@DOMAIN.COM"]
+                    assert call_kwargs[1]["start_new_session"] is True
+
+    def test_perform_kinit_sets_krb5ccname(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that kinit sets KRB5CCNAME environment variable."""
+        env = {"SQL_USER": "user@DOMAIN.COM", "SQL_PASS": "secret"}
+        with patch.dict("os.environ", env, clear=False):
+            with patch("shutil.which", return_value="/usr/bin/kinit"):
+                with patch("subprocess.Popen") as mock_popen:
+                    mock_proc = MagicMock()
+                    mock_proc.communicate.return_value = (b"", b"")
+                    mock_proc.returncode = 0
+                    mock_popen.return_value = mock_proc
+                    try:
+                        inventory_plugin._perform_kinit()
+                        assert "KRB5CCNAME" in os.environ
+                        assert os.environ["KRB5CCNAME"].startswith("FILE:")
+                    finally:
+                        inventory_plugin._cleanup_ccache()
+
+    def test_perform_kinit_passes_minimal_env(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that kinit receives a minimal environment with PATH and KRB5CCNAME."""
+        env = {
+            "SQL_USER": "user@DOMAIN.COM",
+            "SQL_PASS": "secret",
+            "UNRELATED_VAR": "should_not_pass",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            with patch("shutil.which", return_value="/usr/bin/kinit"):
+                with patch("subprocess.Popen") as mock_popen:
+                    mock_proc = MagicMock()
+                    mock_proc.communicate.return_value = (b"", b"")
+                    mock_proc.returncode = 0
+                    mock_popen.return_value = mock_proc
+                    try:
+                        inventory_plugin._perform_kinit()
+                    finally:
+                        inventory_plugin._cleanup_ccache()
+
+                    call_env = mock_popen.call_args[1]["env"]
+                    assert "PATH" in call_env
+                    assert "KRB5CCNAME" in call_env
+                    assert "UNRELATED_VAR" not in call_env
+
+    def test_perform_kinit_propagates_krb5_config(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that KRB5_CONFIG is propagated to the kinit environment."""
+        env = {
+            "SQL_USER": "user@DOMAIN.COM",
+            "SQL_PASS": "secret",
+            "KRB5_CONFIG": "/etc/custom/krb5.conf",
+        }
+        with patch.dict("os.environ", env, clear=False):
+            with patch("shutil.which", return_value="/usr/bin/kinit"):
+                with patch("subprocess.Popen") as mock_popen:
+                    mock_proc = MagicMock()
+                    mock_proc.communicate.return_value = (b"", b"")
+                    mock_proc.returncode = 0
+                    mock_popen.return_value = mock_proc
+                    try:
+                        inventory_plugin._perform_kinit()
+                    finally:
+                        inventory_plugin._cleanup_ccache()
+
+                    call_env = mock_popen.call_args[1]["env"]
+                    assert call_env["KRB5_CONFIG"] == "/etc/custom/krb5.conf"
 
     def test_perform_kinit_missing_sql_user(
         self, inventory_plugin: InventoryModule
@@ -388,30 +510,64 @@ class TestPerformKinit:
         env = {"SQL_USER": "user@DOMAIN.COM", "SQL_PASS": "wrong"}
         with patch.dict("os.environ", env, clear=False):
             with patch("shutil.which", return_value="/usr/bin/kinit"):
-                with patch("subprocess.run") as mock_run:
-                    mock_run.return_value = MagicMock(
-                        returncode=1,
-                        stderr="kinit: KDC reply did not match expectations",
+                with patch("subprocess.Popen") as mock_popen:
+                    mock_proc = MagicMock()
+                    mock_proc.communicate.return_value = (
+                        b"",
+                        b"kinit: KDC reply did not match expectations",
                     )
+                    mock_proc.returncode = 1
+                    mock_popen.return_value = mock_proc
                     from ansible.errors import AnsibleError
 
                     with pytest.raises(AnsibleError, match="kinit failed"):
-                        inventory_plugin._perform_kinit()
+                        try:
+                            inventory_plugin._perform_kinit()
+                        finally:
+                            inventory_plugin._cleanup_ccache()
 
-    def test_perform_kinit_timeout(
+    def test_perform_kinit_redacts_password(
         self, inventory_plugin: InventoryModule
     ) -> None:
-        """Test that kinit timeout raises an error."""
-        import subprocess
+        """Test that the password is redacted from kinit error output."""
+        env = {"SQL_USER": "user@DOMAIN.COM", "SQL_PASS": "MySecret123"}
+        with patch.dict("os.environ", env, clear=False):
+            with patch("shutil.which", return_value="/usr/bin/kinit"):
+                with patch("subprocess.Popen") as mock_popen:
+                    mock_proc = MagicMock()
+                    mock_proc.communicate.return_value = (
+                        b"",
+                        b"kinit: error MySecret123 leaked",
+                    )
+                    mock_proc.returncode = 1
+                    mock_popen.return_value = mock_proc
+                    from ansible.errors import AnsibleError
 
+                    with pytest.raises(AnsibleError, match="<redacted>") as exc_info:
+                        try:
+                            inventory_plugin._perform_kinit()
+                        finally:
+                            inventory_plugin._cleanup_ccache()
+                    assert "MySecret123" not in str(exc_info.value)
+
+    def test_perform_kinit_oserror(
+        self, inventory_plugin: InventoryModule
+    ) -> None:
+        """Test that OSError from Popen is handled."""
         env = {"SQL_USER": "user@DOMAIN.COM", "SQL_PASS": "secret"}
         with patch.dict("os.environ", env, clear=False):
             with patch("shutil.which", return_value="/usr/bin/kinit"):
-                with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("kinit", 30)):
+                with patch(
+                    "subprocess.Popen",
+                    side_effect=OSError("No such file"),
+                ):
                     from ansible.errors import AnsibleError
 
-                    with pytest.raises(AnsibleError, match="kinit timed out"):
-                        inventory_plugin._perform_kinit()
+                    with pytest.raises(AnsibleError, match="Kerberos auth failure"):
+                        try:
+                            inventory_plugin._perform_kinit()
+                        finally:
+                            inventory_plugin._cleanup_ccache()
 
 
 class TestKerberosAuthentication:

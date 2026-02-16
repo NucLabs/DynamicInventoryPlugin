@@ -283,6 +283,7 @@ groups:
 """
 
 import os  # noqa: E402
+import tempfile  # noqa: E402
 from typing import TYPE_CHECKING, Any  # noqa: E402
 
 from ansible.errors import AnsibleError, AnsibleParserError  # noqa: E402
@@ -311,6 +312,7 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
         """Initialize the inventory plugin."""
         super().__init__()
         self._connection: Any = None
+        self._kerb_ccache: tempfile.NamedTemporaryFile | None = None  # type: ignore[type-arg]
 
     def verify_file(self, path: str) -> bool:
         """Verify that the inventory source file is valid.
@@ -408,12 +410,50 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
 
         return connection
 
+    def _setup_ccache(self) -> str:
+        """Create a private Kerberos credential cache file.
+
+        Execution environments and containerised runtimes often lack a
+        default credential cache location.  This method creates a
+        temporary file and sets ``KRB5CCNAME`` so that ``kinit`` (and
+        later ``pymssql`` / FreeTDS) write to and read from the same
+        cache, following the same pattern used by the built-in WinRM
+        connection plugin.
+
+        Returns:
+            The ``KRB5CCNAME`` value (``FILE:<path>``).
+        """
+        if self._kerb_ccache is None:
+            self._kerb_ccache = tempfile.NamedTemporaryFile(  # noqa: SIM115
+                prefix="mssql_krb_",
+                suffix="_ccache",
+            )
+            self.display.vvv(
+                f"Created Kerberos ccache at {self._kerb_ccache.name}"
+            )
+        krb5ccname = f"FILE:{self._kerb_ccache.name}"
+        os.environ["KRB5CCNAME"] = krb5ccname
+        return krb5ccname
+
+    def _cleanup_ccache(self) -> None:
+        """Remove the private Kerberos credential cache."""
+        if self._kerb_ccache is not None:
+            try:
+                self._kerb_ccache.close()
+            except OSError:
+                pass
+            self._kerb_ccache = None
+            os.environ.pop("KRB5CCNAME", None)
+
     def _perform_kinit(self) -> None:
         """Obtain a Kerberos ticket using credentials from environment variables.
 
-        Reads SQL_USER and SQL_PASS from the environment and runs kinit to
-        initialize a Kerberos ticket-granting ticket (TGT).  The SQL_USER value
-        should be in the form ``username@REALM``.
+        Creates a private credential cache (ccache) so that ``kinit``
+        works reliably inside execution environments where the default
+        ccache location may not exist.  Reads ``SQL_USER`` and
+        ``SQL_PASS`` from the environment and runs ``kinit`` to
+        initialise a Kerberos ticket-granting ticket (TGT).  The
+        ``SQL_USER`` value should be in the form ``username@REALM``.
 
         Raises:
             AnsibleError: If environment variables are missing or kinit fails.
@@ -441,32 +481,65 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             )
             raise AnsibleError(msg)
 
-        self.display.vvv(f"Running kinit for principal {sql_user}")
+        # Set up a private ccache for this plugin instance
+        krb5ccname = self._setup_ccache()
 
+        # Build a minimal environment for kinit -- only PATH and
+        # KRB5CCNAME are strictly required.  This mirrors the approach
+        # used by the Ansible WinRM connection plugin.
+        krb5env: dict[str, str] = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "KRB5CCNAME": krb5ccname,
+        }
+
+        # Propagate KRB5_CONFIG / KRB5_KTNAME / KRB5_CLIENT_KTNAME and
+        # any other Kerberos-related variables the caller may need.
+        for var in (
+            "KRB5_CONFIG",
+            "KRB5_KTNAME",
+            "KRB5_CLIENT_KTNAME",
+            "KRB5RCACHETYPE",
+            "KRB5_TRACE",
+        ):
+            if var in os.environ:
+                krb5env[var] = os.environ[var]
+
+        self.display.vvv(
+            f"Running kinit for principal {sql_user} "
+            f"(ccache={krb5ccname})"
+        )
+
+        # Use Popen with start_new_session so the child does not inherit
+        # the controlling TTY (avoids interactive prompts on macOS, etc.).
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(  # noqa: S603
                 [kinit_path, sql_user],
-                input=sql_pass,
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
+                start_new_session=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=krb5env,
             )
-            if result.returncode != 0:
-                stderr = result.stderr.strip()
-                msg = (
-                    f"kinit failed for principal '{sql_user}': {stderr}. "
-                    "Verify that SQL_USER (e.g. 'user@DOMAIN.COM') and "
-                    "SQL_PASS are correct and that the KDC is reachable."
-                )
-                raise AnsibleError(msg)
-            self.display.vvv("kinit succeeded – Kerberos TGT obtained")
-        except subprocess.TimeoutExpired as err:
-            msg = (
-                "kinit timed out. Verify that the Kerberos KDC is reachable "
-                "and that krb5.conf is configured correctly."
-            )
+        except OSError as err:
+            msg = f"Kerberos auth failure when calling kinit: {err}"
             raise AnsibleError(msg) from err
+
+        b_password = (sql_pass + "\n").encode("utf-8")
+        stdout, stderr = process.communicate(b_password, timeout=30)
+        rc = process.returncode
+
+        if rc != 0:
+            err_text = stderr.decode("utf-8", errors="replace").strip()
+            # Ensure the password never leaks into log output
+            err_text = err_text.replace(sql_pass, "<redacted>")
+            msg = (
+                f"kinit failed for principal '{sql_user}': {err_text}. "
+                "Verify that SQL_USER (e.g. 'user@DOMAIN.COM') and "
+                "SQL_PASS are correct and that the KDC is reachable."
+            )
+            raise AnsibleError(msg)
+
+        self.display.vvv("kinit succeeded -- Kerberos TGT obtained")
 
     def _check_kerberos_ticket(self) -> None:
         """Ensure a valid Kerberos ticket exists, obtaining one if necessary.
@@ -693,10 +766,14 @@ class InventoryModule(BaseInventoryPlugin, Constructable, Cacheable):
             except KeyError:
                 update_cache = True
 
-        if not use_cache or update_cache:
-            results = self._execute_query()
+        try:
+            if not use_cache or update_cache:
+                results = self._execute_query()
 
-        if update_cache:
-            self._cache[cache_key] = results
+            if update_cache:
+                self._cache[cache_key] = results
 
-        self._populate_inventory(results)
+            self._populate_inventory(results)
+        finally:
+            # Clean up the private Kerberos ccache created for this run
+            self._cleanup_ccache()
